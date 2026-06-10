@@ -3,7 +3,7 @@ import cv2
 import json
 import time
 from detection.Image_Loader.Image_loader import ImageLoader
-from detection.detection.Dlib_detector import DlibHOGDetector
+from detection.Face_Detection.Dlib_detector import DlibHOGDetector
 
 RAW_DIR = "data/raw"
 PROCESSED_DIR = "data/processed_dlib"  # Targeted directly to your separate Dlib sandbox

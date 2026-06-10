@@ -3,7 +3,7 @@ import cv2
 import time
 import json
 import dlib
-from src.detection.landmark_detection.Dlib_landmark import DlibLandmarkAligner
+from src.detection.Landmark_Detection.Dlib_landmark import DlibLandmarkAligner
 
 def main():
     # Enforce safe directory mapping based on your layout screenshot

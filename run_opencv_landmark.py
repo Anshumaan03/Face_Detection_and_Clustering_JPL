@@ -2,7 +2,7 @@ import os
 import cv2
 import time
 import json
-from src.detection.landmark_detection.OpenCV_landmark import OpenCVLandmarkAligner
+from src.detection.Landmark_Detection.OpenCV_landmark import OpenCVLandmarkAligner
 
 def main():
     # Enforce safe directory mapping based on your layout screenshot

@@ -2,7 +2,7 @@
 import os
 import cv2
 import numpy as np
-from datasets import load_dataset
+from data import load_dataset
 
 TARGET_DIR = "data/raw"
 MAX_IMAGES = 5000
