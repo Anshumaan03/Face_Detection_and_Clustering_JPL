@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 class OpenCVLandmarkAligner:
-    def __init__(self, model_path="models/lbfmodel.yaml", target_size=(224, 224)):
+    def __init__(self, model_path="/Users/anshumaansinghrathore/Desktop/Face Clustering/models/lbfmodel 2.crdownload", target_size=(224, 224)):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"[ERROR] OpenCV LBF weights missing at expected path: {model_path}")
         self.facemark = cv2.face.createFacemarkLBF()

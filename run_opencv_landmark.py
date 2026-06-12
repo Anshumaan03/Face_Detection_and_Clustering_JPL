@@ -6,7 +6,7 @@ from src.detection.Landmark_Detection.OpenCV_landmark import OpenCVLandmarkAlign
 
 def main():
     # Enforce safe directory mapping based on your layout screenshot
-    json_path = "/Users/anshumaansinghrathore/Desktop/Face Clustering/data/processed_opencv/opencv_detection_metadata.json"  
+    json_path = "/Users/anshumaansinghrathore/Desktop/Face Clustering/data/processed/detection_metadata.json"  
     raw_dir = "data/raw"
     output_dir = "data/aligned_opencv"
     os.makedirs(output_dir, exist_ok=True)

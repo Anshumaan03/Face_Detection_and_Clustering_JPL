@@ -2,8 +2,8 @@ import os
 import cv2
 import json
 import time
-from detection.Image_Loader.Image_loader import ImageLoader
-from detection.Face_Detection.OpenCV_detector import HaarFaceDetector
+from src.detection.Image_Loader.Image_loader import ImageLoader
+from src.detection.Face_Detection.OpenCV_detector import HaarFaceDetector
 
 RAW_DIR = "data/raw"
 PROCESSED_DIR = "data/processed"
