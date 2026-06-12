@@ -7,7 +7,7 @@ venv/
 .env/
 
 # Dlib models
-models/*.dat
+models/
 
 # Python
 __pycache__/
