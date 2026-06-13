@@ -1144,17 +1144,27 @@ def run_clustering(embeddings: np.ndarray, labels: list, file_names: list):
     # ── Save results to JSON ───────────────────────────────────
     import json as _json
     output = {
-        "best_params"  : {k: v for k, v in best_result.items() if k != "pred_labels"},
-        "all_results"  : [{k: v for k, v in r.items() if k != "pred_labels"} for r in all_results],
-        "per_identity" : {
-            identity: {
-                "total"     : len(preds),
-                "noise"     : preds.count(-1),
-                "n_clusters": len(set(p for p in preds if p != -1))
-            }
-            for identity, preds in identity_to_pred.items()
+    "pred_labels": best_result["pred_labels"].tolist(),
+
+    "best_params": {
+        k: v for k, v in best_result.items()
+        if k != "pred_labels"
+    },
+
+    "all_results": [
+        {k: v for k, v in r.items() if k != "pred_labels"}
+        for r in all_results
+    ],
+
+    "per_identity": {
+        identity: {
+            "total": len(preds),
+            "noise": preds.count(-1),
+            "n_clusters": len(set(p for p in preds if p != -1))
         }
+        for identity, preds in identity_to_pred.items()
     }
+}
     with open("clustering_results.json", "w") as f:
         _json.dump(output, f, indent=2)
     print(f"\n  ✅ Full results saved to: clustering_results.json")
