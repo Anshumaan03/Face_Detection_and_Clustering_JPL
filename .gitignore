@@ -1,5 +1,8 @@
 # Dataset
 data/
+#result
+results/
+
 
 # Virtual environment
 facepoc/
