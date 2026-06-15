@@ -20,6 +20,20 @@ DB_CONFIG = {
 MIN_CLUSTER_SIZE_SWEEP = [2, 3, 4, 5]
 MIN_SAMPLES_SWEEP      = [1, 2, 3]
 
+def _purity(ground_truths, labels):
+    """Cluster purity: fraction of correctly assigned samples in majority-class clusters."""
+    from collections import Counter
+    total = len(labels)
+    score = 0
+    for cluster_id in set(labels):
+        if cluster_id == -1:
+            continue
+        mask = labels == cluster_id
+        majority = Counter(ground_truths[mask]).most_common(1)[0][1]
+        score += majority
+    return score / total if total > 0 else 0.0
+
+
 def run_hdbscan_sweep():
     print("🔌 Connecting to MySQL...")
     try:
@@ -111,6 +125,31 @@ def run_hdbscan_sweep():
         assigned= set(best_labels[mask])
         count   = int(mask.sum())
         print(f"  {identity:<30} {count:>6}  {sorted(assigned)}")
+
+    # ── Save results to JSON for create_cluster_folders.py ──
+    output = {
+        "pred_labels": [int(l) for l in best_labels],
+        "best_params": {
+            "min_cluster_size": best_cfg[0],
+            "min_samples":      best_cfg[1],
+            "n_clusters":       len(set(best_labels)) - (1 if -1 in best_labels else 0),
+            "nmi":              float(normalized_mutual_info_score(ground_truths, best_labels)),
+            "ari":              float(best_ari),
+            "noise_pct":        float(np.sum(best_labels == -1) / total * 100),
+            "purity":           float(_purity(ground_truths, best_labels)),
+        },
+        "per_identity": {
+            identity: {
+                "total":      int((np.array(raw_labels) == identity).sum()),
+                "noise":      int(np.sum(best_labels[np.array(raw_labels) == identity] == -1)),
+                "n_clusters": len(set(best_labels[np.array(raw_labels) == identity]) - {-1}),
+            }
+            for identity in le.classes_
+        }
+    }
+    with open("clustering_results.json", "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\n💾 Saved clustering_results.json")
 
 if __name__ == "__main__":
     run_hdbscan_sweep()

@@ -44,7 +44,7 @@ cursor = conn.cursor()
 cursor.execute("""
 SELECT file_name, identity_label
 FROM face_embeddings
-ORDER BY id
+ORDER BY identity_label, file_name
 """)
 
 rows = cursor.fetchall()
