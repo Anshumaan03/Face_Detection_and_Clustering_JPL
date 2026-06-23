@@ -1,36 +1,21 @@
-"""
-Central config for the face embedding comparison pipeline.
-Edit the paths/credentials here — nothing else should need hardcoded paths.
-"""
-
 import os
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-DATA_ROOT = "/Users/anshumaansinghrathore/Desktop/Face Clustering/data/raw" # data/raw/person1/*.jpg, data/raw/person2/*.jpg, ...
-OUTPUT_ROOT = "/Users/anshumaansinghrathore/Desktop/Face Clustering/results_comparison_pipeline" # cluster folders, logs, etc. get written here
+DATA_ROOT = "/Users/anshumaansinghrathore/Desktop/Face Clustering/data/raw" 
+OUTPUT_ROOT = "/Users/anshumaansinghrathore/Desktop/Face Clustering/results_comparison_pipeline" 
 CLUSTERS_ROOT = os.path.join(OUTPUT_ROOT, "clusters")
 
-# ---------------------------------------------------------------------------
-# Model weight paths — point these at your actual files
-# ---------------------------------------------------------------------------
+
 ARCFACE_ONNX_PATH = "/Users/anshumaansinghrathore/Desktop/Face Clustering/models/Arcface.onnx"
 DLIB_RESNET_PATH = "/Users/anshumaansinghrathore/Desktop/Face Clustering/models/Dlib_Resnet.dat"
 DLIB_SHAPE_PREDICTOR_PATH = "/Users/anshumaansinghrathore/Desktop/Face Clustering/models/shape_predictor_68_face_landmarks.dat"  
-# needed for dlib's own chip alignment
+# needed for dlib's own alignment
 FACENET_VGGFACE2_PATH = "/Users/anshumaansinghrathore/Desktop/Face Clustering/models/facenet_vggface2.pt"
 SIGLIP2_MODEL_NAME = "google/siglip2-base-patch16-224"
 
-# InsightFace detector model pack (used ONLY for detection + 5-point landmarks,
-# shared across all 4 embedding models)
-INSIGHTFACE_DET_MODEL = "buffalo_l"   # ships with a strong RetinaFace detector
+
+INSIGHTFACE_DET_MODEL = "buffalo_l"   
 DETECTOR_CTX_ID = -1   # 0 = first GPU, -1 = CPU
 
-# ---------------------------------------------------------------------------
-# Per-model input conventions
-# (this is the part that was silently broken before — keep it explicit)
-# ---------------------------------------------------------------------------
 MODEL_INPUT_SPECS = {
     "arcface": {
         "size": 112,
@@ -59,9 +44,7 @@ EMBEDDING_DIMS = {
     "siglip2": 768,   # base-patch16-224 -> 768; check your variant
 }
 
-# ---------------------------------------------------------------------------
-# MySQL
-# ---------------------------------------------------------------------------
+
 MYSQL_CONFIG = {
     "host": "localhost",
     "user": "root",
@@ -69,9 +52,6 @@ MYSQL_CONFIG = {
     "database": "face_db_new",
 }
 
-# ---------------------------------------------------------------------------
-# HDBSCAN — IDENTICAL across all 4 models, on purpose, so comparison is fair
-# ---------------------------------------------------------------------------
 HDBSCAN_PARAMS = {
     "min_cluster_size": 5,
     "min_samples": 3,

@@ -1,18 +1,3 @@
-"""
-clustering.py
-=============
-Runs HDBSCAN on a model's embeddings (loaded from MySQL), computes
-clustering-quality metrics against the true identity labels, and exports
-cluster assignments as both DB rows and physical "cluster folders" (symlinks
-or copies of the original images, grouped by predicted cluster) for visual
-inspection / the Streamlit app.
-
-IMPORTANT: HDBSCAN_PARAMS in config.py are used AS-IS, identically for every
-model. Don't tune them per-model — that would defeat the point of a fair
-embedding-quality comparison. If you want to explore hyperparameter
-sensitivity, do that as a separate, explicitly-labeled experiment.
-"""
-
 from __future__ import annotations
 
 import os
@@ -36,12 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 def run_hdbscan(embeddings: np.ndarray, params: dict = None) -> np.ndarray:
-    """
-    embeddings: (N, D) array, ALREADY L2-normalized (done in embeddings.py at
-    extraction time, so this function assumes it's already true — it does not
-    re-normalize, to avoid masking upstream bugs by silently "fixing" them here).
-    Returns: (N,) array of cluster labels, -1 = noise (HDBSCAN's convention).
-    """
     params = params or config.HDBSCAN_PARAMS
     clusterer = hdbscan.HDBSCAN(**params)
     labels = clusterer.fit_predict(embeddings)
@@ -49,11 +28,6 @@ def run_hdbscan(embeddings: np.ndarray, params: dict = None) -> np.ndarray:
 
 
 def compute_metrics(true_labels: np.ndarray, predicted_labels: np.ndarray) -> dict:
-    """
-    Standard external clustering metrics. Computed INCLUDING noise points
-    (-1) as their own label, since silently dropping them would inflate
-    scores and hide a model that's flagging too much as noise.
-    """
     ari = adjusted_rand_score(true_labels, predicted_labels)
     nmi = normalized_mutual_info_score(true_labels, predicted_labels)
     homogeneity, completeness, v_measure = homogeneity_completeness_v_measure(true_labels, predicted_labels)
@@ -72,16 +46,6 @@ def compute_metrics(true_labels: np.ndarray, predicted_labels: np.ndarray) -> di
 
 
 def cluster_model(model: str, db: Storage, run_label: str = "default") -> Dict:
-    """
-    Full per-model clustering step:
-      1. load embeddings from MySQL
-      2. run HDBSCAN
-      3. compute metrics against true identity labels
-      4. persist cluster_results back to MySQL
-      5. export cluster folders to disk
-
-    Returns a dict with the dataframe (for Streamlit) and the metrics.
-    """
     df = db.load_embeddings_df(model)
     if df.empty:
         raise ValueError(f"No embeddings found in DB for model='{model}'. Run extraction first.")
@@ -104,12 +68,6 @@ def cluster_model(model: str, db: Storage, run_label: str = "default") -> Dict:
 
 
 def export_cluster_folders(df: pd.DataFrame, model: str, run_label: str = "default"):
-    """
-    Writes outputs/clusters/<run_label>/<model>/cluster_<label>/<original_filename>
-    as symlinks (falls back to copy if symlink isn't supported, e.g. some
-    Windows setups) so you can visually eyeball clustering quality per model.
-    Noise points go in a 'noise' folder rather than 'cluster_-1' for clarity.
-    """
     base_dir = os.path.join(config.CLUSTERS_ROOT, run_label, model)
     if os.path.exists(base_dir):
         shutil.rmtree(base_dir)  # clean slate each run, avoids stale files from a previous run mixing in
@@ -135,7 +93,6 @@ def export_cluster_folders(df: pd.DataFrame, model: str, run_label: str = "defau
 
 
 def cluster_all_models(run_label: str = "default") -> Dict[str, dict]:
-    """Runs cluster_model for every model in config.MODEL_INPUT_SPECS, returns {model: result}."""
     db = Storage()
     results = {}
     for model in config.MODEL_INPUT_SPECS:
@@ -148,7 +105,6 @@ def cluster_all_models(run_label: str = "default") -> Dict[str, dict]:
 
 
 def metrics_summary_table(results: Dict[str, dict]) -> pd.DataFrame:
-    """Flattens {model: {"metrics": {...}}} into a tidy comparison DataFrame for display."""
     rows = []
     for model, res in results.items():
         row = {"model": model, **res["metrics"]}

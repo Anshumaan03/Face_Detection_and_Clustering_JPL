@@ -1,27 +1,10 @@
 """
-storage.py
-==========
-MySQL persistence for detections + embeddings. Storing bbox/landmarks
-alongside embeddings (not just the final vector) is deliberate: if a model's
-results look wrong later, you can audit/replay alignment without rerunning
-detection from scratch.
-
 Schema
 ------
 faces            : one row per (image, detected face) — bbox, landmarks, det_score
 embeddings       : one row per (face, model) — the actual vector + dim, as JSON
                     (JSON keeps it human-inspectable; fine at this dataset scale)
 
-Usage
------
-    from storage import Storage
-    db = Storage()
-    db.create_schema()
-
-    face_id = db.insert_face(identity="person1", image_path="...", bbox=[...], landmarks=[...], det_score=0.99)
-    db.insert_embedding(face_id=face_id, model="arcface", vector=np_vec)
-
-    df = db.load_embeddings_df(model="arcface")   # -> pandas DataFrame for clustering.py
 """
 
 from __future__ import annotations

@@ -1,17 +1,3 @@
-"""
-app.py
-======
-Streamlit dashboard for the face embedding comparison.
-
-Run:
-    streamlit run app.py
-
-Shows:
-  - Metrics comparison table across all 4 models (ARI, NMI, etc.)
-  - Bar chart comparing ARI across models
-  - Per-model cluster folder browser (pick a model + cluster, see the images)
-"""
-
 import os
 import glob
 
