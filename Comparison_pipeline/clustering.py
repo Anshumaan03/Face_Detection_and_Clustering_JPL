@@ -16,7 +16,7 @@ from sklearn.metrics import (
 
 import config
 from storage import Storage
-from recommendation import build_centroids_from_clusters
+from recommendations import build_centroids_from_clusters
 
 logger = logging.getLogger(__name__)
 

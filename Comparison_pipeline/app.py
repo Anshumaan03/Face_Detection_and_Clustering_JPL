@@ -10,7 +10,7 @@ from storage import Storage
 from clustering import cluster_all_models, metrics_summary_table
 from common import detect_faces, largest_or_best_face, align_face
 from embeddings import EXTRACTOR_CLASSES, get_normalized_embedding
-from recommendation import (
+from recommendations import (
     recommend_for_embedding,
     assign_face_to_cluster,
     create_new_cluster,

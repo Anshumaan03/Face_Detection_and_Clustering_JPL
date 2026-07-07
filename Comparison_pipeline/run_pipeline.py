@@ -25,7 +25,7 @@ from common import load_image, detect_faces, largest_or_best_face, align_face, i
 from embeddings import load_all_extractors, get_normalized_embedding
 from storage import Storage
 from clustering import cluster_all_models, metrics_summary_table
-from recommendation import calibrate_thresholds, reclaim_noise
+from recommendations import calibrate_thresholds, reclaim_noise
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
