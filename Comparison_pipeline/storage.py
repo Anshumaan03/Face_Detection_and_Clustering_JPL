@@ -59,6 +59,20 @@ SCHEMA_STATEMENTS = [
         UNIQUE KEY uq_run_face (model, run_label, face_id)
     ) ENGINE=InnoDB;
     """,
+    """
+    CREATE TABLE IF NOT EXISTS cluster_centroids (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        model VARCHAR(64) NOT NULL,
+        run_label VARCHAR(255) NOT NULL,
+        cluster_label INT NOT NULL,
+        centroid_vector JSON NOT NULL,
+        n_members INT NOT NULL,
+        representative_face_id INT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (representative_face_id) REFERENCES faces(id) ON DELETE CASCADE,
+        UNIQUE KEY uq_model_run_cluster (model, run_label, cluster_label)
+    ) ENGINE=InnoDB;
+    """,
 ]
 
 
@@ -160,6 +174,137 @@ class Storage:
         )
         self.conn.commit()
         cur.close()
+
+    # -- misc lookups needed by recommendation.py -------------------------
+
+    def get_embedding_vector(self, face_id: int, model: str) -> Optional[np.ndarray]:
+        cur = self.conn.cursor(dictionary=True)
+        cur.execute("SELECT vector FROM embeddings WHERE face_id = %s AND model = %s", (face_id, model))
+        row = cur.fetchone()
+        cur.close()
+        if row is None:
+            return None
+        return np.array(json.loads(row["vector"]), dtype=np.float32)
+
+    def get_face_info(self, face_id: int) -> Optional[dict]:
+        cur = self.conn.cursor(dictionary=True)
+        cur.execute("SELECT id, identity, image_path FROM faces WHERE id = %s", (face_id,))
+        row = cur.fetchone()
+        cur.close()
+        return row
+
+    def get_cluster_face_ids(self, model: str, run_label: str, cluster_label: int) -> List[int]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT face_id FROM cluster_results WHERE model = %s AND run_label = %s AND cluster_label = %s",
+            (model, run_label, cluster_label),
+        )
+        ids = [r[0] for r in cur.fetchall()]
+        cur.close()
+        return ids
+
+    def get_noise_face_ids(self, model: str, run_label: str) -> List[int]:
+        return self.get_cluster_face_ids(model, run_label, -1)
+
+    def get_all_cluster_labels(self, model: str, run_label: str) -> List[int]:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT DISTINCT cluster_label FROM cluster_results
+            WHERE model = %s AND run_label = %s AND cluster_label != -1
+            """,
+            (model, run_label),
+        )
+        labels = sorted(r[0] for r in cur.fetchall())
+        cur.close()
+        return labels
+
+    def set_face_cluster_label(self, model: str, run_label: str, face_id: int, cluster_label: int):
+        """Writes/overwrites a single face's cluster assignment (used by Flow 1 + noise reclamation)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO cluster_results (model, run_label, face_id, cluster_label)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE cluster_label = VALUES(cluster_label)
+            """,
+            (model, run_label, face_id, cluster_label),
+        )
+        self.conn.commit()
+        cur.close()
+
+    def reassign_cluster_label(self, model: str, run_label: str, old_label: int, new_label: int):
+        """Bulk-moves every face at old_label to new_label (used when merging two clusters)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            UPDATE cluster_results SET cluster_label = %s
+            WHERE model = %s AND run_label = %s AND cluster_label = %s
+            """,
+            (new_label, model, run_label, old_label),
+        )
+        self.conn.commit()
+        cur.close()
+
+    # -- cluster centroids (Flow 1 + Flow 2 rely on these) -----------------
+
+    def upsert_centroid(self, model: str, run_label: str, cluster_label: int,
+                         centroid_vector: np.ndarray, n_members: int, representative_face_id: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO cluster_centroids
+                (model, run_label, cluster_label, centroid_vector, n_members, representative_face_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                centroid_vector = VALUES(centroid_vector),
+                n_members = VALUES(n_members),
+                representative_face_id = VALUES(representative_face_id)
+            """,
+            (model, run_label, cluster_label,
+             json.dumps(np.asarray(centroid_vector, dtype=np.float32).tolist()),
+             int(n_members), int(representative_face_id)),
+        )
+        self.conn.commit()
+        cur.close()
+
+    def delete_centroid(self, model: str, run_label: str, cluster_label: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            "DELETE FROM cluster_centroids WHERE model = %s AND run_label = %s AND cluster_label = %s",
+            (model, run_label, cluster_label),
+        )
+        self.conn.commit()
+        cur.close()
+
+    def delete_all_centroids(self, model: str, run_label: str):
+        """Wipes centroids for a (model, run_label) before rebuilding from a fresh HDBSCAN run."""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM cluster_centroids WHERE model = %s AND run_label = %s", (model, run_label))
+        self.conn.commit()
+        cur.close()
+
+    def load_centroids_df(self, model: str, run_label: str):
+        """Returns a DataFrame: cluster_label, centroid_vector (np.ndarray), n_members,
+        representative_face_id, representative_identity, representative_image_path."""
+        import pandas as pd
+        cur = self.conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT cc.cluster_label, cc.centroid_vector, cc.n_members, cc.representative_face_id,
+                   f.identity AS representative_identity, f.image_path AS representative_image_path
+            FROM cluster_centroids cc
+            JOIN faces f ON f.id = cc.representative_face_id
+            WHERE cc.model = %s AND cc.run_label = %s
+            ORDER BY cc.cluster_label
+            """,
+            (model, run_label),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r["centroid_vector"] = np.array(json.loads(r["centroid_vector"]), dtype=np.float32)
+        return pd.DataFrame(rows)
 
     def close(self):
         self.conn.close()

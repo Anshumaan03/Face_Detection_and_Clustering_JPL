@@ -58,3 +58,26 @@ HDBSCAN_PARAMS = {
     "metric": "euclidean",   # embeddings are L2-normalized before this, so euclidean == cosine rank-order
     "cluster_selection_method": "eom",
 }
+
+# ---------------------------------------------------------------------------
+# Recommendation system (Flow 1: new-face-vs-centroid, Flow 2: cluster-vs-cluster)
+# ---------------------------------------------------------------------------
+# Where user-uploaded images (Flow 1) get saved so they have a stable
+# image_path to store in the `faces` table, same as dataset images.
+UPLOADS_ROOT = os.path.join(OUTPUT_ROOT, "uploads")
+
+# Distances below are COSINE distances (1 - cosine_similarity) between
+# L2-normalized embeddings, so they live in [0, 2]; smaller = more similar.
+#
+# IMPORTANT: these numbers are NOT measured on your data — they're generic
+# starting points, one per model, since each embedding space has its own
+# natural scale of separation. Your dataset already carries ground-truth
+# identity labels (from the folder structure), so before trusting these in
+# the app, run recommendation.calibrate_thresholds(model, run_label) once
+# per model and replace the values below with what it suggests.
+THRESHOLDS = {
+    "arcface":     {"t1": 0.30, "t2": 0.45},
+    "dlib_resnet": {"t1": 0.25, "t2": 0.40},
+    "facenet":     {"t1": 0.30, "t2": 0.50},
+    "siglip2":     {"t1": 0.35, "t2": 0.55},  # general-purpose embedding, not face-specific -> expect looser separation
+}

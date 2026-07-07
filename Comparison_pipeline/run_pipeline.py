@@ -25,6 +25,7 @@ from common import load_image, detect_faces, largest_or_best_face, align_face, i
 from embeddings import load_all_extractors, get_normalized_embedding
 from storage import Storage
 from clustering import cluster_all_models, metrics_summary_table
+from recommendation import calibrate_thresholds, reclaim_noise
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -80,6 +81,36 @@ def run_clustering_and_report(run_label: str = "default"):
     return table
 
 
+def run_calibration(run_label: str = "default"):
+    """Prints data-driven T1/T2 suggestions per model, using the ground-truth
+    identity labels this dataset already has. Requires clustering to have run
+    at least once (so embeddings exist in the DB)."""
+    db = Storage()
+    print("\n=== Threshold calibration (data-driven, using ground-truth identity) ===")
+    for model in config.MODEL_INPUT_SPECS:
+        try:
+            result = calibrate_thresholds(model, run_label, db)
+        except ValueError as e:
+            logger.warning("Skipping calibration for %s: %s", model, e)
+            continue
+        flag = "" if result["clean_separation"] else "  <-- T1 > T2, no clean global cutoff for this model"
+        print(f"[{model}] suggested T1={result['suggested_t1']:.3f}  T2={result['suggested_t2']:.3f}"
+              f"  (same-id mean={result['same_identity_dist_mean']:.3f},"
+              f" diff-id mean={result['diff_identity_dist_mean']:.3f}){flag}")
+    db.close()
+
+
+def run_noise_reclamation(run_label: str = "default", auto_apply: bool = True):
+    """Routes every noise (-1) face back through the Flow-1 decision logic for each model."""
+    db = Storage()
+    print("\n=== Noise reclamation ===")
+    for model in config.MODEL_INPUT_SPECS:
+        result = reclaim_noise(model, run_label, db, auto_apply=auto_apply)
+        print(f"[{model}] auto-merged={len(result['auto_merged'])}  "
+              f"needs-review={len(result['suggestions'])}  left-as-noise={len(result['left_as_noise'])}")
+    db.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-extraction", action="store_true",
@@ -88,7 +119,19 @@ def main():
                          help="Limit number of images processed (debugging).")
     parser.add_argument("--run-label", type=str, default="default",
                          help="Label for this clustering run (lets you keep multiple runs side by side).")
+    parser.add_argument("--calibrate-thresholds", action="store_true",
+                         help="Print data-driven T1/T2 suggestions per model and exit (no extraction/clustering).")
+    parser.add_argument("--reclaim-noise", action="store_true",
+                         help="Run noise reclamation (Flow 1 applied to cluster -1 points) and exit.")
     args = parser.parse_args()
+
+    if args.calibrate_thresholds:
+        run_calibration(run_label=args.run_label)
+        return
+
+    if args.reclaim_noise:
+        run_noise_reclamation(run_label=args.run_label)
+        return
 
     if not args.skip_extraction:
         run_extraction(limit=args.limit)
