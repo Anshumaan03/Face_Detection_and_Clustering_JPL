@@ -49,7 +49,7 @@ MYSQL_CONFIG = {
     "host": "localhost",
     "user": "root",
     "password": "Anshu@2003",
-    "database": "face_db_new",
+    "database": "face_db_comparison",
 }
 
 HDBSCAN_PARAMS = {

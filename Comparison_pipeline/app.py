@@ -153,63 +153,59 @@ with tab_flow1:
                           caption=f"Nearest cluster {rec['nearest_cluster_label']} "
                                   f"(identity: {rec['representative_identity']})",
                           use_container_width=True)
-            else:
-                st.info("No existing clusters yet for this model/run -- this will start the first one.")
 
         if rec["distance"] is not None:
             st.write(f"Cosine distance to nearest centroid: **{rec['distance']:.3f}**")
 
-        if rec["status"] == "auto_merge":
-            st.success(f"High confidence match -- auto-merge into cluster {rec['nearest_cluster_label']}.")
-            if st.button("Confirm auto-merge", key="flow1_confirm_auto"):
-                db = Storage()
-                face_id = db.insert_face(
-                    identity="uploaded", image_path=pending["save_path"],
-                    bbox=np.zeros(4), landmarks=np.zeros((5, 2)), det_score=1.0,
-                )
-                db.insert_embedding(face_id, pending["model"], pending["vec"])
-                assign_face_to_cluster(face_id, pending["model"], run_label,
-                                        rec["nearest_cluster_label"], pending["vec"], db)
-                db.close()
-                st.success(f"Assigned to cluster {rec['nearest_cluster_label']}.")
-                del st.session_state["flow1_pending"]
+        def _insert_uploaded_face(vec):
+            db = Storage()
+            face_id = db.insert_face(
+                identity="uploaded", image_path=pending["save_path"],
+                bbox=np.zeros(4), landmarks=np.zeros((5, 2)), det_score=1.0,
+            )
+            db.insert_embedding(face_id, pending["model"], vec)
+            return db, face_id
 
-        elif rec["status"] == "ask_user":
-            st.warning("Borderline match -- is this the same person as the cluster shown above?")
+        # Status only changes the MESSAGE/emphasis -- the distance is a hint, not a verdict.
+        # A dramatic angle, heavy makeup, occlusion, etc. can push the distance past T2 even
+        # for the same person, so the "is this really a new cluster?" override always has to
+        # be available whenever there's a candidate cluster to compare against, not just in
+        # the ask_user zone.
+        if rec["representative_image_path"]:
+            if rec["status"] == "auto_merge":
+                st.success(f"High confidence match against cluster {rec['nearest_cluster_label']} "
+                           f"({rec['representative_identity']}).")
+            elif rec["status"] == "ask_user":
+                st.warning(f"Borderline match against cluster {rec['nearest_cluster_label']} "
+                           f"({rec['representative_identity']}) -- is this the same person?")
+            else:  # new_cluster
+                st.info(f"Distance is high, but the nearest cluster shown is "
+                        f"{rec['nearest_cluster_label']} ({rec['representative_identity']}) -- "
+                        f"if that's visually the same person, confirm it below instead of "
+                        f"starting a new cluster.")
+
+            same_is_default = rec["status"] in ("auto_merge", "ask_user")
             c1, c2 = st.columns(2)
-            if c1.button("Yes, same person", key="flow1_yes"):
-                db = Storage()
-                face_id = db.insert_face(
-                    identity="uploaded", image_path=pending["save_path"],
-                    bbox=np.zeros(4), landmarks=np.zeros((5, 2)), det_score=1.0,
-                )
-                db.insert_embedding(face_id, pending["model"], pending["vec"])
+            if c1.button(f"Yes, same person -- merge into cluster {rec['nearest_cluster_label']}",
+                         key="flow1_yes", type="primary" if same_is_default else "secondary"):
+                db, face_id = _insert_uploaded_face(pending["vec"])
                 assign_face_to_cluster(face_id, pending["model"], run_label,
                                         rec["nearest_cluster_label"], pending["vec"], db)
                 db.close()
                 st.success(f"Assigned to cluster {rec['nearest_cluster_label']}.")
                 del st.session_state["flow1_pending"]
-            if c2.button("No, different person", key="flow1_no"):
-                db = Storage()
-                face_id = db.insert_face(
-                    identity="uploaded", image_path=pending["save_path"],
-                    bbox=np.zeros(4), landmarks=np.zeros((5, 2)), det_score=1.0,
-                )
-                db.insert_embedding(face_id, pending["model"], pending["vec"])
+            if c2.button("No, different person -- new cluster",
+                         key="flow1_no", type="secondary" if same_is_default else "primary"):
+                db, face_id = _insert_uploaded_face(pending["vec"])
                 new_label = create_new_cluster(face_id, pending["model"], run_label, pending["vec"], db)
                 db.close()
                 st.success(f"Created new cluster {new_label}.")
                 del st.session_state["flow1_pending"]
 
-        else:  # new_cluster
-            st.info("No close match found -- this will start a new cluster.")
+        else:
+            st.info("No existing clusters yet for this model/run -- this will start the first one.")
             if st.button("Confirm new cluster", key="flow1_confirm_new"):
-                db = Storage()
-                face_id = db.insert_face(
-                    identity="uploaded", image_path=pending["save_path"],
-                    bbox=np.zeros(4), landmarks=np.zeros((5, 2)), det_score=1.0,
-                )
-                db.insert_embedding(face_id, pending["model"], pending["vec"])
+                db, face_id = _insert_uploaded_face(pending["vec"])
                 new_label = create_new_cluster(face_id, pending["model"], run_label, pending["vec"], db)
                 db.close()
                 st.success(f"Created new cluster {new_label}.")
