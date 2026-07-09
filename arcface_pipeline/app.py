@@ -1,5 +1,6 @@
 import os
 import glob
+import base64
 
 import numpy as np
 import cv2
@@ -81,6 +82,53 @@ def _save_face_crop(img_bgr: np.ndarray, bbox: np.ndarray, base_name: str, idx: 
     return save_path
 
 
+from typing import Optional
+
+
+@st.cache_data(show_spinner=False)
+def _square_tile_data_uri(path: str, max_dim: int = 300):
+    """Reads an image from disk and returns a base64 data URI, downscaled so the
+    longer side is max_dim -- kept small since it's only ever displayed as a
+    fixed-size cropped tile, never at full resolution."""
+    img = cv2.imread(path)
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    scale = max_dim / max(h, w)
+    if scale < 1:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)))
+    ok, buf = cv2.imencode(".jpg", img)
+    if not ok:
+        return None
+    return "data:image/jpeg;base64," + base64.b64encode(buf).decode("utf-8")
+
+
+_NOISE_TILE_SVG = (
+    "data:image/svg+xml;utf8,"
+    "<svg xmlns='http://www.w3.org/2000/svg' width='150' height='150'>"
+    "<rect width='150' height='150' fill='%23333'/>"
+    "<text x='50%25' y='50%25' fill='%23999' font-size='14' "
+    "text-anchor='middle' dominant-baseline='middle'>Noise</text></svg>"
+)
+
+
+def _render_square_tile(image_path: Optional[str], size_px: int = 150):
+    """Renders a uniform, center-cropped square tile -- same size and shape no
+    matter whether the source image is a tall portrait, wide landscape, huge,
+    or tiny. This is what keeps the grid looking like a real grid."""
+    uri = None
+    if image_path and os.path.exists(image_path):
+        uri = _square_tile_data_uri(image_path)
+    if uri is None:
+        uri = _NOISE_TILE_SVG
+    st.markdown(
+        f"<div style='width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:8px;'>"
+        f"<img src='{uri}' style='width:100%;height:100%;object-fit:cover;display:block;'/>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
 tab_metrics, tab_flow1, tab_flow2, tab_noise, tab_calibrate = st.tabs([
     "Metrics & clusters",
     "Recommend (Flow 1)",
@@ -128,29 +176,18 @@ with tab_metrics:
                     or st.session_state["browse_cluster_label"] not in ordered_labels):
                 st.session_state["browse_cluster_label"] = ordered_labels[0]
 
-            NOISE_PLACEHOLDER_SVG = (
-                "data:image/svg+xml;utf8,"
-                "<svg xmlns='http://www.w3.org/2000/svg' width='150' height='150'>"
-                "<rect width='150' height='150' fill='%23333'/>"
-                "<text x='50%25' y='50%25' fill='%23999' font-size='14' "
-                "text-anchor='middle' dominant-baseline='middle'>Noise</text></svg>"
-            )
-
             n_cols = 6
             grid_cols = st.columns(n_cols)
             for i, label in enumerate(ordered_labels):
                 with grid_cols[i % n_cols]:
                     if label == -1:
-                        st.image(NOISE_PLACEHOLDER_SVG, use_container_width=True)
+                        _render_square_tile(None)
                         tile_caption = "Noise"
                     else:
                         row = centroid_lookup.get(label)
                         thumb_path = row["representative_image_path"] if row is not None else None
                         identity = row["representative_identity"] if row is not None else "?"
-                        if thumb_path and os.path.exists(thumb_path):
-                            st.image(thumb_path, use_container_width=True)
-                        else:
-                            st.image(NOISE_PLACEHOLDER_SVG, use_container_width=True)
+                        _render_square_tile(thumb_path)
                         tile_caption = f"Cluster {label} ({identity})"
 
                     is_selected = st.session_state["browse_cluster_label"] == label
@@ -179,10 +216,8 @@ with tab_metrics:
             detail_cols = st.columns(6)
             for i, row in enumerate(face_rows):
                 with detail_cols[i % 6]:
-                    if os.path.exists(row["image_path"]):
-                        st.image(row["image_path"], use_container_width=True, caption=row["identity"])
-                    else:
-                        st.caption(f"(file missing on disk) {row['identity']}")
+                    _render_square_tile(row["image_path"])
+                    st.caption(row["identity"])
 
 # ===========================================================================
 # TAB: Flow 1 -- upload a new face, compare to all centroids
@@ -285,12 +320,12 @@ with tab_flow1:
         st.markdown("---")
         col_a, col_b = st.columns(2)
         with col_a:
-            st.image(item["save_path"], caption=f"{item['label']} (uploaded)", use_container_width=True)
+            _render_square_tile(item["save_path"])
+            st.caption(f"{item['label']} (uploaded)")
         with col_b:
-            st.image(rec["representative_image_path"],
-                      caption=f"Nearest cluster {rec['nearest_cluster_label']} "
-                              f"(identity: {rec['representative_identity']})",
-                      use_container_width=True)
+            _render_square_tile(rec["representative_image_path"])
+            st.caption(f"Nearest cluster {rec['nearest_cluster_label']} "
+                       f"(identity: {rec['representative_identity']})")
 
         if rec.get("auto_merge_demoted"):
             st.warning(f"{item['label']}: asking for confirmation -- distance to cluster "
@@ -348,9 +383,11 @@ with tab_flow2:
                 st.markdown("---")
                 c1, c2, c3 = st.columns([1, 1, 2])
                 with c1:
-                    st.image(pair["rep_a_image_path"], caption=f"Cluster {pair['cluster_a']}", use_container_width=True)
+                    _render_square_tile(pair["rep_a_image_path"])
+                    st.caption(f"Cluster {pair['cluster_a']}")
                 with c2:
-                    st.image(pair["rep_b_image_path"], caption=f"Cluster {pair['cluster_b']}", use_container_width=True)
+                    _render_square_tile(pair["rep_b_image_path"])
+                    st.caption(f"Cluster {pair['cluster_b']}")
                 with c3:
                     st.write(f"Distance: **{pair['distance']:.3f}**"
                              + (" (auto-mergeable)" if pair["auto_mergeable"] else ""))
@@ -401,9 +438,11 @@ with tab_noise:
 
             c1, c2, c3 = st.columns([1, 1, 2])
             with c1:
-                st.image(face_info["image_path"], caption="Noise point", use_container_width=True)
+                _render_square_tile(face_info["image_path"])
+                st.caption("Noise point")
             with c2:
-                st.image(s["representative_image_path"], caption=f"Cluster {s['nearest_cluster_label']}", use_container_width=True)
+                _render_square_tile(s["representative_image_path"])
+                st.caption(f"Cluster {s['nearest_cluster_label']}")
             with c3:
                 st.write(f"Distance: **{s['distance']:.3f}**")
                 b1, b2 = st.columns(2)

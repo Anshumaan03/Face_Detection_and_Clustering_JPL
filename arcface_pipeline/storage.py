@@ -74,6 +74,12 @@ SCHEMA_STATEMENTS = [
 ]
 
 
+_databases_ensured = set()  # module-level: tracks which DB names we've already verified/created
+                             # this process -- avoids a second full connection handshake on
+                             # every single Storage() instantiation, which was happening
+                             # multiple times per click (once per Storage() call site).
+
+
 class Storage:
     def __init__(self, db_config: dict = None):
         self.db_config = db_config or config.MYSQL_CONFIG
@@ -81,13 +87,17 @@ class Storage:
         self.conn = mysql.connector.connect(**self.db_config)
 
     def _ensure_database_exists(self):
+        db_name = self.db_config["database"]
+        if db_name in _databases_ensured:
+            return
         cfg_no_db = {k: v for k, v in self.db_config.items() if k != "database"}
         conn = mysql.connector.connect(**cfg_no_db)
         cur = conn.cursor()
-        cur.execute(f"CREATE DATABASE IF NOT EXISTS `{self.db_config['database']}` DEFAULT CHARACTER SET utf8mb4;")
+        cur.execute(f"CREATE DATABASE IF NOT EXISTS `{db_name}` DEFAULT CHARACTER SET utf8mb4;")
         conn.commit()
         cur.close()
         conn.close()
+        _databases_ensured.add(db_name)
 
     def create_schema(self):
         cur = self.conn.cursor()
