@@ -2,6 +2,7 @@ import os
 import glob
 
 import numpy as np
+import cv2
 import streamlit as st
 import pandas as pd
 
@@ -61,6 +62,25 @@ def _insert_uploaded_face(save_path: str, vec: np.ndarray):
     return db, face_id
 
 
+def _save_face_crop(img_bgr: np.ndarray, bbox: np.ndarray, base_name: str, idx: int, margin_frac: float = 0.3) -> str:
+    """Crops a visible (non-warped) region around one detected face, with a margin, and
+    saves it under a filename unique to this face -- so a group photo's N faces each get
+    their own row in `faces` without colliding on the image_path uniqueness constraint."""
+    h, w = img_bgr.shape[:2]
+    x1, y1, x2, y2 = bbox
+    bw, bh = x2 - x1, y2 - y1
+    nx1 = int(max(0, x1 - bw * margin_frac))
+    ny1 = int(max(0, y1 - bh * margin_frac))
+    nx2 = int(min(w, x2 + bw * margin_frac))
+    ny2 = int(min(h, y2 + bh * margin_frac))
+    crop = img_bgr[ny1:ny2, nx1:nx2]
+
+    os.makedirs(config.UPLOADS_ROOT, exist_ok=True)
+    save_path = os.path.join(config.UPLOADS_ROOT, f"{base_name}__face{idx}.jpg")
+    cv2.imwrite(save_path, crop)
+    return save_path
+
+
 tab_metrics, tab_flow1, tab_flow2, tab_noise, tab_calibrate = st.tabs([
     "Metrics & clusters",
     "Recommend (Flow 1)",
@@ -87,33 +107,42 @@ with tab_metrics:
             st.json(metrics)
 
         st.subheader("Cluster browser")
-        cluster_dir = os.path.join(config.CLUSTERS_ROOT, run_label)
+        st.caption("Live view from the database -- reflects Flow 1, Flow 2, and noise-reclamation "
+                   "changes immediately, unlike the exported clusters/ folder on disk (which is only "
+                   "written during a full HDBSCAN re-cluster).")
 
-        if not os.path.isdir(cluster_dir):
-            st.warning(f"No cluster folder found at {cluster_dir}. Run the pipeline / clustering first.")
+        db = Storage()
+        cluster_labels = db.get_all_cluster_labels_including_noise(run_label)
+        db.close()
+
+        if not cluster_labels:
+            st.warning("No clusters found for this run_label yet. Run the pipeline / clustering first.")
         else:
-            cluster_folders = sorted(
-                os.listdir(cluster_dir),
-                key=lambda x: (x != "noise", x)
-            )
-            cluster_choice = st.selectbox("Cluster", cluster_folders, key="browse_cluster")
+            ordered_labels = sorted(cluster_labels, key=lambda l: (l == -1, l))
+            display_names = ["noise" if l == -1 else f"cluster_{l}" for l in ordered_labels]
+            choice_display = st.selectbox("Cluster", display_names, key="browse_cluster")
+            chosen_label = ordered_labels[display_names.index(choice_display)]
 
-            chosen_dir = os.path.join(cluster_dir, cluster_choice)
-            image_paths = sorted(glob.glob(os.path.join(chosen_dir, "*")))
+            db = Storage()
+            face_rows = db.get_cluster_faces_info(run_label, chosen_label)
+            db.close()
 
-            st.write(f"**{len(image_paths)} images** in `{cluster_choice}`")
+            st.write(f"**{len(face_rows)} images** in `{choice_display}`")
 
-            identities_in_cluster = sorted({os.path.basename(p).split("__")[0] for p in image_paths})
+            identities_in_cluster = sorted({r["identity"] for r in face_rows})
             if len(identities_in_cluster) > 1:
                 st.error(f"Mixed identities in this cluster: {identities_in_cluster}")
-            else:
-                st.success(f"Pure cluster: {identities_in_cluster[0] if identities_in_cluster else 'n/a'}")
+            elif identities_in_cluster:
+                st.success(f"Pure cluster: {identities_in_cluster[0]}")
 
             n_cols = 6
             cols = st.columns(n_cols)
-            for i, img_path in enumerate(image_paths):
+            for i, row in enumerate(face_rows):
                 with cols[i % n_cols]:
-                    st.image(img_path, use_container_width=True, caption=os.path.basename(img_path).split("__")[0])
+                    if os.path.exists(row["image_path"]):
+                        st.image(row["image_path"], use_container_width=True, caption=row["identity"])
+                    else:
+                        st.caption(f"(file missing on disk) {row['identity']}")
 
 # ===========================================================================
 # TAB: Flow 1 -- upload a new face, compare to all centroids
@@ -220,8 +249,14 @@ with tab_flow1:
                               f"(identity: {rec['representative_identity']})",
                       use_container_width=True)
 
-        st.warning(f"This image is asking for confirmation -- cosine distance to cluster "
-                   f"{rec['nearest_cluster_label']} is **{rec['distance']:.3f}**. Same person?")
+        if rec.get("auto_merge_demoted"):
+            st.warning(f"This image is asking for confirmation -- distance to cluster "
+                       f"{rec['nearest_cluster_label']} is **{rec['distance']:.3f}** (under the global "
+                       f"auto-merge ceiling, but farther than this specific cluster has ever spread "
+                       f"before). Same person?")
+        else:
+            st.warning(f"This image is asking for confirmation -- cosine distance to cluster "
+                       f"{rec['nearest_cluster_label']} is **{rec['distance']:.3f}**. Same person?")
 
         c1, c2 = st.columns(2)
         if c1.button("Yes, same person", key="flow1_yes"):
@@ -353,27 +388,41 @@ with tab_calibrate:
     st.caption(
         "config.THRESHOLDS starts with a generic guess. This uses the ground-truth identity "
         "labels already in your dataset (from the data/raw/<identity>/ folders) to suggest better "
-        "T1 (same-identity, 95th percentile) / T2 (different-identity, 5th percentile) values -- "
-        "an offline tuning step you wouldn't have without labelled data."
+        "T1 / T2 values -- an offline tuning step you wouldn't have without labelled data."
     )
+
+    target_rate_pct = st.slider("Target false-merge rate for the precision-based T1", 0.1, 5.0, 1.0, 0.1,
+                                 help="e.g. 1.0 means: fewer than 1% of auto-merges at this threshold "
+                                      "would actually be joining two different people, based on your data.")
 
     if st.button("Calibrate", key="calibrate_run"):
         db = Storage()
         try:
-            st.session_state["calibration_result"] = calibrate_thresholds(run_label, db)
+            st.session_state["calibration_result"] = calibrate_thresholds(
+                run_label, db, target_false_merge_rate=target_rate_pct / 100.0
+            )
         except ValueError as e:
             st.warning(str(e))
         db.close()
 
     if "calibration_result" in st.session_state:
         r = st.session_state["calibration_result"]
-        c1, c2 = st.columns(2)
-        c1.metric("Suggested T1 (auto-merge below)", f"{r['suggested_t1']:.3f}")
-        c2.metric("Suggested T2 (new cluster above)", f"{r['suggested_t2']:.3f}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("T1 -- percentile method", f"{r['suggested_t1']:.3f}")
+        c2.metric("T1 -- precision method (prefer this)", f"{r['suggested_t1_precision']:.3f}")
+        c3.metric("Suggested T2 (new cluster above)", f"{r['suggested_t2']:.3f}")
         st.write(f"Same-identity mean distance: {r['same_identity_dist_mean']:.3f}  |  "
                  f"Different-identity mean distance: {r['diff_identity_dist_mean']:.3f}  |  "
                  f"Sampled {r['n_same_pairs']} same-id and {r['n_diff_pairs']} diff-id pairs.")
+        st.write(f"At the precision-method T1, the achieved false-merge rate in your sample is "
+                 f"**{r['achieved_false_merge_rate']:.2%}**.")
+        if r["no_safe_auto_merge_zone"]:
+            st.error("Even the closest different-identity pair in your data sits below your target "
+                      "false-merge rate -- there's no distance cutoff that's safe to auto-merge at "
+                      "without asking. Consider raising the target rate above, or leaving auto-merge "
+                      "off (set T1 very low, e.g. 0.0) and relying on the ask_user zone for everything.")
         if not r["clean_separation"]:
-            st.warning(f"Suggested T1 ({r['suggested_t1']:.3f}) > suggested T2 ({r['suggested_t2']:.3f}) -- "
+            st.warning(f"Percentile T1 ({r['suggested_t1']:.3f}) > suggested T2 ({r['suggested_t2']:.3f}) -- "
                        f"no clean single global cutoff for ArcFace on this data.")
-        st.info("Copy suggested_t1 / suggested_t2 into config.THRESHOLDS once you're happy with them.")
+        st.info("Copy the precision-method T1 and suggested_t2 into config.THRESHOLDS once you're "
+                "happy with them -- the percentile T1 is shown for comparison but tends to be looser.")

@@ -91,10 +91,16 @@ def run_calibration(run_label: str = "default"):
     print("\n=== Threshold calibration (data-driven, using ground-truth identity) ===")
     try:
         result = calibrate_thresholds(run_label, db)
-        flag = "" if result["clean_separation"] else "  <-- T1 > T2, no clean global cutoff on this data"
-        print(f"suggested T1={result['suggested_t1']:.3f}  T2={result['suggested_t2']:.3f}"
+        flag = "" if result["clean_separation"] else "  <-- percentile T1 > T2, no clean global cutoff on this data"
+        print(f"T1 (percentile method) = {result['suggested_t1']:.3f}")
+        print(f"T1 (precision method, prefer this) = {result['suggested_t1_precision']:.3f}  "
+              f"(achieved false-merge rate: {result['achieved_false_merge_rate']:.2%})")
+        print(f"T2 = {result['suggested_t2']:.3f}"
               f"  (same-id mean={result['same_identity_dist_mean']:.3f},"
               f" diff-id mean={result['diff_identity_dist_mean']:.3f}){flag}")
+        if result["no_safe_auto_merge_zone"]:
+            print("WARNING: no distance cutoff in your data meets the target false-merge rate -- "
+                  "consider a higher target rate or disabling auto-merge (T1 near 0.0).")
     except ValueError as e:
         logger.warning("Skipping calibration: %s", e)
     db.close()

@@ -233,6 +233,35 @@ class Storage:
         cur.close()
         return labels
 
+    def get_all_cluster_labels_including_noise(self, run_label: str) -> List[int]:
+        """Every distinct cluster_label present for this run_label, noise (-1) included.
+        This is the live, database-backed listing -- unlike the exported clusters/ folders
+        on disk, it reflects Flow 1/2 and noise-reclamation changes immediately."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT cluster_label FROM cluster_results WHERE run_label = %s ORDER BY cluster_label",
+            (run_label,),
+        )
+        labels = [r[0] for r in cur.fetchall()]
+        cur.close()
+        return labels
+
+    def get_cluster_faces_info(self, run_label: str, cluster_label: int) -> List[dict]:
+        """Member faces of one cluster: face_id, identity, image_path -- for browsing."""
+        cur = self.conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT f.id AS face_id, f.identity, f.image_path
+            FROM cluster_results cr JOIN faces f ON f.id = cr.face_id
+            WHERE cr.run_label = %s AND cr.cluster_label = %s
+            ORDER BY f.id
+            """,
+            (run_label, cluster_label),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+
     # -- cluster centroids (Flow 1 + Flow 2 rely on these) -----------------
 
     def upsert_centroid(self, run_label: str, cluster_label: int,

@@ -96,6 +96,18 @@ def build_centroids_from_clusters(df, run_label: str, db: Storage):
 # Flow 1 — new face vs. all existing centroids
 # ---------------------------------------------------------------------------
 
+def _cluster_spread(run_label: str, cluster_label: int, centroid: np.ndarray, db: Storage) -> Optional[float]:
+    """The largest distance any current member of this cluster sits from its own centroid --
+    i.e. how far this specific cluster has ever actually spread. Used to keep auto-merge
+    from being looser for a tight cluster just because a global T1 happens to be generous."""
+    face_ids = db.get_cluster_face_ids(run_label, cluster_label)
+    if not face_ids:
+        return None
+    dists = [cosine_distance(centroid, v) for fid in face_ids
+             if (v := db.get_embedding_vector(fid)) is not None]
+    return max(dists) if dists else None
+
+
 def recommend_for_embedding(embedding: np.ndarray, run_label: str, db: Storage,
                              thresholds: Optional[dict] = None) -> dict:
     """Core decision function for Flow 1 (and reused by noise reclamation)."""
@@ -111,15 +123,28 @@ def recommend_for_embedding(embedding: np.ndarray, run_label: str, db: Storage,
             "representative_face_id": None,
             "representative_image_path": None,
             "representative_identity": None,
+            "auto_merge_demoted": False,
         }
 
     distances = centroids_df["centroid_vector"].apply(lambda c: cosine_distance(embedding, c))
     best_idx = distances.idxmin()
     best_row = centroids_df.loc[best_idx]
     d = float(distances.loc[best_idx])
+    cluster_label = int(best_row["cluster_label"])
 
+    auto_merge_demoted = False
     if d < thresholds["t1"]:
-        status = "auto_merge"
+        # Global T1 is a ceiling, not a guarantee -- also check this specific cluster's
+        # own historical spread. A distance that clears T1 but is well outside how far
+        # this cluster has ever actually stretched is a sign of a coincidental near-match
+        # (e.g. a different but similar-looking person), not a genuine same-identity fit.
+        spread_margin = thresholds.get("spread_margin", 1.15)
+        spread = _cluster_spread(run_label, cluster_label, best_row["centroid_vector"], db)
+        if spread is not None and d > spread * spread_margin:
+            status = "ask_user"
+            auto_merge_demoted = True
+        else:
+            status = "auto_merge"
     elif d < thresholds["t2"]:
         status = "ask_user"
     else:
@@ -127,11 +152,12 @@ def recommend_for_embedding(embedding: np.ndarray, run_label: str, db: Storage,
 
     return {
         "status": status,
-        "nearest_cluster_label": int(best_row["cluster_label"]),
+        "nearest_cluster_label": cluster_label,
         "distance": d,
         "representative_face_id": int(best_row["representative_face_id"]),
         "representative_image_path": best_row["representative_image_path"],
         "representative_identity": best_row["representative_identity"],
+        "auto_merge_demoted": auto_merge_demoted,
     }
 
 
@@ -283,6 +309,7 @@ def merge_clusters(run_label: str, keep_label: int, merge_label: int, db: Storag
 
 def calibrate_thresholds(run_label: str, db: Storage,
                           percentile_t1: float = 95, percentile_t2: float = 5,
+                          target_false_merge_rate: float = 0.01,
                           max_pairs: int = 20000, seed: int = 42) -> dict:
     """
     Suggests T1/T2 using the identity ground truth you already have (it came
@@ -290,15 +317,26 @@ def calibrate_thresholds(run_label: str, db: Storage,
     in a real deployment, but it's exactly what you want for a one-time
     offline tuning pass on a labelled set like this one.
 
-    T1 suggestion: a high percentile (default 95th) of SAME-identity pairwise
-    distances — "how far apart do two photos of the SAME person get, at
-    worst, 95% of the time?" Distances below this are safe to auto-merge.
+    T1 (percentile method): a high percentile (default 95th) of SAME-identity
+    pairwise distances — "how far apart do two photos of the SAME person get,
+    at worst, 95% of the time?" This alone can be too loose: it says nothing
+    about how close the NEAREST different-identity pair happens to sit, so a
+    threshold picked this way can still auto-merge two different people if
+    their embeddings happen to be unusually close.
 
-    T2 suggestion: a low percentile (default 5th) of DIFFERENT-identity
-    pairwise distances — "how close do two DIFFERENT people's photos get, at
-    closest, 5% of the time?" Distances above this are safe to call new.
+    T1 (precision method, `suggested_t1_precision`): the largest cutoff such
+    that, among ALL pairs (same + different identity) at or below it, no more
+    than `target_false_merge_rate` are actually different people. This is a
+    direct, dial-able safety guarantee -- "I'm fine auto-merging as long as
+    fewer than 1% of those merges would be wrong" -- and accounts for
+    same/different distributions overlapping, which the percentile method
+    ignores. Prefer this one; it's usually smaller (more conservative) than
+    the percentile T1 whenever the two distributions overlap at all.
 
-    If suggested T1 > suggested T2, ArcFace doesn't cleanly separate your
+    T2: a low percentile (default 5th) of DIFFERENT-identity pairwise
+    distances — distances above this are safe to call a new person.
+
+    If suggested_t1 > suggested_t2, ArcFace doesn't cleanly separate your
     identities at any single global cutoff on this data — that's a real
     finding (`clean_separation: False`), not a bug.
     """
@@ -327,15 +365,31 @@ def calibrate_thresholds(run_label: str, db: Storage,
             "check that your dataset has more than one identity and multiple photos per identity."
         )
 
-    t1 = float(np.percentile(same, percentile_t1))
+    t1_percentile = float(np.percentile(same, percentile_t1))
     t2 = float(np.percentile(diff, percentile_t2))
+
+    # Precision-driven T1: sweep every sampled pair in ascending distance order and
+    # find the largest cutoff whose cumulative false-merge rate stays at or below target.
+    all_pairs = sorted([(d, True) for d in same] + [(d, False) for d in diff], key=lambda x: x[0])
+    t1_precision, achieved_rate = 0.0, 0.0
+    seen_total = seen_diff = 0
+    for d, is_same in all_pairs:
+        seen_total += 1
+        if not is_same:
+            seen_diff += 1
+        rate = seen_diff / seen_total
+        if rate <= target_false_merge_rate:
+            t1_precision, achieved_rate = d, rate
 
     return {
         "n_same_pairs": len(same),
         "n_diff_pairs": len(diff),
         "same_identity_dist_mean": float(np.mean(same)),
         "diff_identity_dist_mean": float(np.mean(diff)),
-        "suggested_t1": t1,
+        "suggested_t1": t1_percentile,
+        "suggested_t1_precision": t1_precision,
+        "achieved_false_merge_rate": achieved_rate,
+        "no_safe_auto_merge_zone": t1_precision == 0.0,
         "suggested_t2": t2,
-        "clean_separation": t1 <= t2,
+        "clean_separation": t1_percentile <= t2,
     }
