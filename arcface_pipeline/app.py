@@ -108,26 +108,67 @@ with tab_metrics:
 
         st.subheader("Cluster browser")
         st.caption("Live view from the database -- reflects Flow 1, Flow 2, and noise-reclamation "
-                   "changes immediately, unlike the exported clusters/ folder on disk (which is only "
-                   "written during a full HDBSCAN re-cluster).")
+                   "changes immediately, including any new clusters they create.")
 
         db = Storage()
         cluster_labels = db.get_all_cluster_labels_including_noise(run_label)
+        centroids_df = db.load_centroids_df(run_label)
         db.close()
 
         if not cluster_labels:
             st.warning("No clusters found for this run_label yet. Run the pipeline / clustering first.")
         else:
             ordered_labels = sorted(cluster_labels, key=lambda l: (l == -1, l))
-            display_names = ["noise" if l == -1 else f"cluster_{l}" for l in ordered_labels]
-            choice_display = st.selectbox("Cluster", display_names, key="browse_cluster")
-            chosen_label = ordered_labels[display_names.index(choice_display)]
+            centroid_lookup = (
+                {int(r["cluster_label"]): r for _, r in centroids_df.iterrows()}
+                if not centroids_df.empty else {}
+            )
+
+            if ("browse_cluster_label" not in st.session_state
+                    or st.session_state["browse_cluster_label"] not in ordered_labels):
+                st.session_state["browse_cluster_label"] = ordered_labels[0]
+
+            NOISE_PLACEHOLDER_SVG = (
+                "data:image/svg+xml;utf8,"
+                "<svg xmlns='http://www.w3.org/2000/svg' width='150' height='150'>"
+                "<rect width='150' height='150' fill='%23333'/>"
+                "<text x='50%25' y='50%25' fill='%23999' font-size='14' "
+                "text-anchor='middle' dominant-baseline='middle'>Noise</text></svg>"
+            )
+
+            n_cols = 6
+            grid_cols = st.columns(n_cols)
+            for i, label in enumerate(ordered_labels):
+                with grid_cols[i % n_cols]:
+                    if label == -1:
+                        st.image(NOISE_PLACEHOLDER_SVG, use_container_width=True)
+                        tile_caption = "Noise"
+                    else:
+                        row = centroid_lookup.get(label)
+                        thumb_path = row["representative_image_path"] if row is not None else None
+                        identity = row["representative_identity"] if row is not None else "?"
+                        if thumb_path and os.path.exists(thumb_path):
+                            st.image(thumb_path, use_container_width=True)
+                        else:
+                            st.image(NOISE_PLACEHOLDER_SVG, use_container_width=True)
+                        tile_caption = f"Cluster {label} ({identity})"
+
+                    is_selected = st.session_state["browse_cluster_label"] == label
+                    if st.button(tile_caption, key=f"grid_select_{label}",
+                                 use_container_width=True,
+                                 type="primary" if is_selected else "secondary"):
+                        st.session_state["browse_cluster_label"] = label
+                        st.rerun()
+
+            chosen_label = st.session_state["browse_cluster_label"]
+            st.markdown("---")
+            st.write(f"### {'Noise' if chosen_label == -1 else f'Cluster {chosen_label}'}")
 
             db = Storage()
             face_rows = db.get_cluster_faces_info(run_label, chosen_label)
             db.close()
 
-            st.write(f"**{len(face_rows)} images** in `{choice_display}`")
+            st.write(f"**{len(face_rows)} images**")
 
             identities_in_cluster = sorted({r["identity"] for r in face_rows})
             if len(identities_in_cluster) > 1:
@@ -135,10 +176,9 @@ with tab_metrics:
             elif identities_in_cluster:
                 st.success(f"Pure cluster: {identities_in_cluster[0]}")
 
-            n_cols = 6
-            cols = st.columns(n_cols)
+            detail_cols = st.columns(6)
             for i, row in enumerate(face_rows):
-                with cols[i % n_cols]:
+                with detail_cols[i % 6]:
                     if os.path.exists(row["image_path"]):
                         st.image(row["image_path"], use_container_width=True, caption=row["identity"])
                     else:
@@ -148,101 +188,104 @@ with tab_metrics:
 # TAB: Flow 1 -- upload a new face, compare to all centroids
 # ===========================================================================
 with tab_flow1:
-    st.subheader("Upload a new face and get a cluster recommendation")
-    uploaded_file = st.file_uploader("Upload an image containing one face", type=["jpg", "jpeg", "png"], key="flow1_upload")
+    st.subheader("Upload one or more images and get cluster recommendations")
+    st.caption("Each image is analyzed independently -- some may auto-merge, some may ask you, "
+               "some may form new clusters, all in the same batch.")
+    uploaded_files = st.file_uploader("Upload images, one face each", type=["jpg", "jpeg", "png"],
+                                       accept_multiple_files=True, key="flow1_upload")
 
-    if uploaded_file is not None and st.button("Analyze", key="flow1_analyze"):
-        import cv2
+    if uploaded_files and st.button("Analyze", key="flow1_analyze"):
+        extractor = get_extractor()
 
-        raw_bytes = uploaded_file.getvalue()
-        img_bgr = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
+        st.session_state["flow1_result_messages"] = []
+        st.session_state["flow1_pending_items"] = {}
+        st.session_state["flow1_diagnostics"] = []
 
-        faces = detect_faces(img_bgr)
-        face = largest_or_best_face(faces)
+        for uf in uploaded_files:
+            raw_bytes = uf.getvalue()
+            img_bgr = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
 
-        st.session_state.pop("flow1_pending", None)
-        st.session_state.pop("flow1_result_message", None)
+            faces = detect_faces(img_bgr)
+            face = largest_or_best_face(faces)
 
-        if face is None:
-            st.session_state.pop("flow1_last_analysis", None)
-            st.error("No face detected in the uploaded image.")
-        else:
+            if face is None:
+                st.session_state["flow1_result_messages"].append(
+                    ("error", f"{uf.name}: no face detected.")
+                )
+                continue
+
             aligned = align_face(img_bgr, face)
-            extractor = get_extractor()
             vec = get_normalized_embedding(extractor, aligned)
 
-            # Diagnostic: which face (of possibly several) got used, and what did the
-            # actual aligned crop look like -- this is the fastest way to catch a wrong
-            # face being picked out of a multi-face photo (see representative image note
-            # below, e.g. two people in frame, or a photo-within-a-photo).
-            st.session_state["flow1_last_analysis"] = {
+            # Diagnostic: which face (of possibly several) got used in THIS file, and
+            # what did the actual aligned crop look like -- catches a wrong face being
+            # picked out of a multi-face photo (e.g. two people in frame).
+            st.session_state["flow1_diagnostics"].append({
+                "label": uf.name,
                 "n_faces": len(faces),
                 "det_score": face.det_score,
                 "aligned_rgb": cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB),
-            }
+            })
 
             db = Storage()
             rec = recommend_for_embedding(vec, run_label, db)
             db.close()
 
             os.makedirs(config.UPLOADS_ROOT, exist_ok=True)
-            save_path = os.path.join(config.UPLOADS_ROOT, uploaded_file.name)
+            save_path = os.path.join(config.UPLOADS_ROOT, uf.name)
             with open(save_path, "wb") as f:
                 f.write(raw_bytes)
 
-            # -------------------------------------------------------------
-            # Strict three-way rule: only the borderline (ask_user) zone
-            # waits for a human decision. auto_merge and new_cluster both
-            # happen immediately -- that's the whole point of calibrating
-            # T1/T2 in the first place.
-            # -------------------------------------------------------------
+            # ---------------------------------------------------------
+            # Strict three-way rule, applied per file: only ask_user
+            # waits for a human decision; auto_merge/new_cluster act
+            # immediately, independently, for every file in the batch.
+            # ---------------------------------------------------------
             if rec["status"] == "auto_merge":
                 db2, face_id = _insert_uploaded_face(save_path, vec)
                 assign_face_to_cluster(face_id, run_label, rec["nearest_cluster_label"], vec, db2)
                 db2.close()
-                st.session_state["flow1_result_message"] = (
+                st.session_state["flow1_result_messages"].append((
                     "success",
-                    f"This image is clustered into cluster {rec['nearest_cluster_label']} "
+                    f"{uf.name}: clustered into cluster {rec['nearest_cluster_label']} "
                     f"(identity: {rec['representative_identity']}) -- auto-merged "
                     f"(distance {rec['distance']:.3f})."
-                )
+                ))
             elif rec["status"] == "new_cluster":
                 db2, face_id = _insert_uploaded_face(save_path, vec)
                 new_label = create_new_cluster(face_id, run_label, vec, db2)
                 db2.close()
                 dist_note = f" (nearest existing cluster was {rec['distance']:.3f} away)" if rec["distance"] is not None else ""
-                st.session_state["flow1_result_message"] = (
+                st.session_state["flow1_result_messages"].append((
                     "info",
-                    f"This image did not match any existing cluster{dist_note} -- "
-                    f"new cluster {new_label} has been formed."
-                )
+                    f"{uf.name}: no existing cluster matched{dist_note} -- new cluster {new_label} formed."
+                ))
             else:  # ask_user
-                st.session_state["flow1_pending"] = {"rec": rec, "vec": vec, "save_path": save_path}
+                st.session_state["flow1_pending_items"][save_path] = {
+                    "label": uf.name, "rec": rec, "vec": vec, "save_path": save_path,
+                }
 
-    # Diagnostic panel: always visible after an analysis, regardless of which
-    # branch it took. If the wrong face got picked out of a multi-face photo,
-    # this is where you'd see it.
-    if "flow1_last_analysis" in st.session_state:
-        diag = st.session_state["flow1_last_analysis"]
-        if diag["n_faces"] > 1:
-            st.warning(f"{diag['n_faces']} faces were detected in the uploaded image -- the "
-                       f"highest-confidence one (det_score={diag['det_score']:.3f}) was used. "
-                       f"If that's not the person you meant, crop the image down to just them "
-                       f"before uploading.")
-        with st.expander("Show the exact aligned crop that was embedded"):
-            st.image(diag["aligned_rgb"], width=150, caption="112x112 crop fed into ArcFace")
+    # Diagnostics for the whole batch, one entry per uploaded file that had a detectable face.
+    if st.session_state.get("flow1_diagnostics"):
+        with st.expander(f"Diagnostics for {len(st.session_state['flow1_diagnostics'])} analyzed image(s)"):
+            for diag in st.session_state["flow1_diagnostics"]:
+                st.write(f"**{diag['label']}**")
+                if diag["n_faces"] > 1:
+                    st.warning(f"{diag['n_faces']} faces detected -- used the highest-confidence one "
+                               f"(det_score={diag['det_score']:.3f}).")
+                st.image(diag["aligned_rgb"], width=150, caption="112x112 crop fed into ArcFace")
+                st.markdown("---")
 
-    if "flow1_result_message" in st.session_state:
-        kind, msg = st.session_state["flow1_result_message"]
+    for kind, msg in st.session_state.get("flow1_result_messages", []):
         getattr(st, kind)(msg)
 
-    if "flow1_pending" in st.session_state:
-        pending = st.session_state["flow1_pending"]
-        rec = pending["rec"]
-
+    pending_items = st.session_state.get("flow1_pending_items", {})
+    for item_key, item in list(pending_items.items()):
+        rec = item["rec"]
+        st.markdown("---")
         col_a, col_b = st.columns(2)
         with col_a:
-            st.image(pending["save_path"], caption="Uploaded image", use_container_width=True)
+            st.image(item["save_path"], caption=f"{item['label']} (uploaded)", use_container_width=True)
         with col_b:
             st.image(rec["representative_image_path"],
                       caption=f"Nearest cluster {rec['nearest_cluster_label']} "
@@ -250,35 +293,36 @@ with tab_flow1:
                       use_container_width=True)
 
         if rec.get("auto_merge_demoted"):
-            st.warning(f"This image is asking for confirmation -- distance to cluster "
+            st.warning(f"{item['label']}: asking for confirmation -- distance to cluster "
                        f"{rec['nearest_cluster_label']} is **{rec['distance']:.3f}** (under the global "
                        f"auto-merge ceiling, but farther than this specific cluster has ever spread "
                        f"before). Same person?")
         else:
-            st.warning(f"This image is asking for confirmation -- cosine distance to cluster "
+            st.warning(f"{item['label']}: asking for confirmation -- cosine distance to cluster "
                        f"{rec['nearest_cluster_label']} is **{rec['distance']:.3f}**. Same person?")
 
         c1, c2 = st.columns(2)
-        if c1.button("Yes, same person", key="flow1_yes"):
-            db, face_id = _insert_uploaded_face(pending["save_path"], pending["vec"])
-            assign_face_to_cluster(face_id, run_label, rec["nearest_cluster_label"], pending["vec"], db)
+        safe_key = abs(hash(item_key))
+        if c1.button("Yes, same person", key=f"flow1_yes_{safe_key}"):
+            db, face_id = _insert_uploaded_face(item["save_path"], item["vec"])
+            assign_face_to_cluster(face_id, run_label, rec["nearest_cluster_label"], item["vec"], db)
             db.close()
-            st.session_state["flow1_result_message"] = (
+            st.session_state["flow1_result_messages"].append((
                 "success",
-                f"This image is clustered into cluster {rec['nearest_cluster_label']} "
+                f"{item['label']}: clustered into cluster {rec['nearest_cluster_label']} "
                 f"(identity: {rec['representative_identity']})."
-            )
-            del st.session_state["flow1_pending"]
+            ))
+            del st.session_state["flow1_pending_items"][item_key]
             st.rerun()
-        if c2.button("No, different person", key="flow1_no"):
-            db, face_id = _insert_uploaded_face(pending["save_path"], pending["vec"])
-            new_label = create_new_cluster(face_id, run_label, pending["vec"], db)
+        if c2.button("No, different person", key=f"flow1_no_{safe_key}"):
+            db, face_id = _insert_uploaded_face(item["save_path"], item["vec"])
+            new_label = create_new_cluster(face_id, run_label, item["vec"], db)
             db.close()
-            st.session_state["flow1_result_message"] = (
+            st.session_state["flow1_result_messages"].append((
                 "info",
-                f"This image did not match -- new cluster {new_label} has been formed."
-            )
-            del st.session_state["flow1_pending"]
+                f"{item['label']}: no match -- new cluster {new_label} has been formed."
+            ))
+            del st.session_state["flow1_pending_items"][item_key]
             st.rerun()
 
 # ===========================================================================
