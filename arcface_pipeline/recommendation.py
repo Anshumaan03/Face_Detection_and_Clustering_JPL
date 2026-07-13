@@ -248,29 +248,68 @@ def reclaim_noise(run_label: str, db: Storage, thresholds: Optional[dict] = None
 # Flow 2 — pairwise cluster-vs-cluster sweep (Google Photos style)
 # ---------------------------------------------------------------------------
 
-def pairwise_cluster_scan(run_label: str, db: Storage, thresholds: Optional[dict] = None) -> List[dict]:
+def pairwise_cluster_scan(run_label: str, db: Storage, thresholds: Optional[dict] = None,
+                           max_members_per_cluster: int = 50, seed: int = 42) -> List[dict]:
     """
-    Scans every pair of cluster centroids and flags pairs whose centroid
-    distance falls below T2 as worth a human look (below T1 is flagged too,
-    marked auto_mergeable, since two centroids ending up that close usually
-    means something drifted after manual merges/reclamation).
+    Scans every pair of clusters for signs they're actually the same person,
+    split apart by HDBSCAN (or by an earlier bad Flow 1 decision). Two checks
+    are combined, and a pair is flagged if EITHER trips:
+
+      - centroid distance < T2 -- cheap, catches clusters whose *average*
+        face is already close.
+      - minimum member-to-member distance < T2 -- catches the case centroid
+        distance alone misses: two sub-clusters of the same person whose
+        centroids drifted apart because of internal pose/lighting diversity
+        (e.g. one cluster of mostly frontal shots, another of dramatic/angled
+        ones), even though specific individual photos across the two are
+        still close. This is also the more principled check, since T1/T2 were
+        calibrated against individual photo-to-photo distances in the first
+        place -- comparing centroid-to-centroid distances against them is an
+        approximation; comparing member-to-member distances is exact.
+
+    Cluster sizes above `max_members_per_cluster` are randomly subsampled for
+    the member-to-member check, to keep this from blowing up on a very large
+    cluster (comparing every member of A against every member of B is
+    |A| x |B| distance calculations per pair).
     """
     thresholds = thresholds or config.THRESHOLDS
     centroids_df = db.load_centroids_df(run_label)
 
-    labels = centroids_df["cluster_label"].tolist()
-    vectors = centroids_df["centroid_vector"].tolist()
+    labels = [int(l) for l in centroids_df["cluster_label"].tolist()]
+    centroid_vectors = centroids_df["centroid_vector"].tolist()
+
+    rng = np.random.default_rng(seed)
+    member_vectors: dict = {}
+    for label in labels:
+        face_ids = db.get_cluster_face_ids(run_label, label)
+        if len(face_ids) > max_members_per_cluster:
+            face_ids = list(rng.choice(face_ids, size=max_members_per_cluster, replace=False))
+        vecs = [v for fid in face_ids if (v := db.get_embedding_vector(fid)) is not None]
+        member_vectors[label] = vecs
 
     suspicious = []
     for i, j in itertools.combinations(range(len(labels)), 2):
-        d = cosine_distance(vectors[i], vectors[j])
-        if d < thresholds["t2"]:
+        label_a, label_b = labels[i], labels[j]
+        centroid_d = cosine_distance(centroid_vectors[i], centroid_vectors[j])
+
+        min_member_d = None
+        for va in member_vectors[label_a]:
+            for vb in member_vectors[label_b]:
+                d = cosine_distance(va, vb)
+                if min_member_d is None or d < min_member_d:
+                    min_member_d = d
+
+        best_d = min(centroid_d, min_member_d) if min_member_d is not None else centroid_d
+
+        if best_d < thresholds["t2"]:
             row_i, row_j = centroids_df.iloc[i], centroids_df.iloc[j]
             suspicious.append({
-                "cluster_a": int(row_i["cluster_label"]),
-                "cluster_b": int(row_j["cluster_label"]),
-                "distance": d,
-                "auto_mergeable": d < thresholds["t1"],
+                "cluster_a": label_a,
+                "cluster_b": label_b,
+                "distance": best_d,
+                "centroid_distance": centroid_d,
+                "min_member_distance": min_member_d,
+                "auto_mergeable": best_d < thresholds["t1"],
                 "rep_a_image_path": row_i["representative_image_path"],
                 "rep_b_image_path": row_j["representative_image_path"],
                 "rep_a_identity": row_i["representative_identity"],

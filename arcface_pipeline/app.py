@@ -391,6 +391,12 @@ with tab_flow2:
                 with c3:
                     st.write(f"Distance: **{pair['distance']:.3f}**"
                              + (" (auto-mergeable)" if pair["auto_mergeable"] else ""))
+                    if pair["min_member_distance"] is not None and pair["min_member_distance"] < pair["centroid_distance"]:
+                        st.caption(f"Flagged via closest individual photos ({pair['min_member_distance']:.3f}) -- "
+                                   f"centroids themselves are farther apart ({pair['centroid_distance']:.3f}), "
+                                   f"likely due to pose/lighting spread within one or both clusters.")
+                    else:
+                        st.caption(f"Flagged via centroid distance ({pair['centroid_distance']:.3f}).")
                     b1, b2 = st.columns(2)
                     if b1.button("Merge (same person)", key=f"flow2_merge_{key}"):
                         db = Storage()

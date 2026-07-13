@@ -48,8 +48,8 @@ HDBSCAN_PARAMS = {
 # precision version accounts for how close the nearest different-identity
 # pair actually sits, which the percentile-of-same-identity number ignores.
 THRESHOLDS = {
-    "t1": 0.40,             # d < T1  -> auto-merge, high confidence same person
-    "t2": 0.60,             # T1<=d<T2 -> ask user; d >= T2 -> new cluster
+    "t1": 0.30,             # d < T1  -> auto-merge, high confidence same person
+    "t2": 0.45,             # T1<=d<T2 -> ask user; d >= T2 -> new cluster
     "spread_margin": 1.15,  # auto-merge also requires d <= (nearest cluster's own historical
                             # max distance-from-centroid) * spread_margin -- stops a tight
                             # cluster from being auto-merged into just because the global T1
