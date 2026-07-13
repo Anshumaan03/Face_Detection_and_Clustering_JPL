@@ -365,10 +365,24 @@ with tab_flow1:
 # ===========================================================================
 with tab_flow2:
     st.subheader("Scan existing clusters for suspicious pairs (possible same person, split across clusters)")
+    st.caption("This scan's sensitivity is independent from Flow 1's T2 -- since nothing here ever "
+               "merges without your click, it's safe to scan wider than the auto-decision thresholds "
+               "to surface more candidate splits for you to review.")
+
+    default_scan_t2 = config.THRESHOLDS["t2"]
+    scan_t2 = st.slider("Scan sensitivity (distance cutoff -- higher finds more candidate splits, "
+                         "including some that turn out to be genuinely different people)",
+                         min_value=0.0, max_value=2.0, value=float(default_scan_t2), step=0.01,
+                         key="flow2_scan_t2")
+    if scan_t2 > default_scan_t2:
+        st.caption(f"Scanning wider than the calibrated T2 ({default_scan_t2:.3f}) -- expect more "
+                   f"pairs, some of which may be false positives you'll dismiss with 'Not the same person'.")
 
     if st.button("Scan for suspicious cluster pairs", key="flow2_scan"):
+        scan_thresholds = dict(config.THRESHOLDS)
+        scan_thresholds["t2"] = scan_t2
         db = Storage()
-        st.session_state["flow2_suspicious"] = pairwise_cluster_scan(run_label, db)
+        st.session_state["flow2_suspicious"] = pairwise_cluster_scan(run_label, db, thresholds=scan_thresholds)
         db.close()
 
     if "flow2_suspicious" in st.session_state:
