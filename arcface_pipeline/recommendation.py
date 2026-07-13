@@ -310,12 +310,21 @@ def merge_clusters(run_label: str, keep_label: int, merge_label: int, db: Storag
 def calibrate_thresholds(run_label: str, db: Storage,
                           percentile_t1: float = 95, percentile_t2: float = 5,
                           target_false_merge_rate: float = 0.01,
-                          max_pairs: int = 20000, seed: int = 42) -> dict:
+                          max_pairs: int = 20000, seed: int = 42,
+                          exclude_identities: frozenset = frozenset({"uploaded"})) -> dict:
     """
     Suggests T1/T2 using the identity ground truth you already have (it came
     from your data/raw/<identity>/ folder structure) — this isn't available
     in a real deployment, but it's exactly what you want for a one-time
     offline tuning pass on a labelled set like this one.
+
+    IMPORTANT: every face inserted through Flow 1 (app.py's _insert_uploaded_face)
+    is stored with the literal identity string "uploaded", regardless of who it
+    actually is. If those rows were included here, two DIFFERENT people's uploaded
+    photos would be counted as a "same identity" pair just because they share that
+    placeholder label -- silently corrupting the same-identity distance distribution
+    and biasing T1 to be too loose, exactly backwards from the safety goal. Rows
+    whose identity is in `exclude_identities` are dropped before pairing.
 
     T1 (percentile method): a high percentile (default 95th) of SAME-identity
     pairwise distances — "how far apart do two photos of the SAME person get,
@@ -341,8 +350,14 @@ def calibrate_thresholds(run_label: str, db: Storage,
     finding (`clean_separation: False`), not a bug.
     """
     df = db.load_embeddings_df()
+    n_before = len(df)
+    if exclude_identities:
+        df = df[~df["identity"].isin(exclude_identities)]
+    n_excluded = n_before - len(df)
+
     if df.empty or len(df) < 2:
-        raise ValueError("Not enough embeddings to calibrate.")
+        raise ValueError("Not enough embeddings to calibrate (after excluding placeholder "
+                          f"identities: {sorted(exclude_identities)}).")
 
     rng = np.random.default_rng(seed)
     n = len(df)
@@ -384,6 +399,7 @@ def calibrate_thresholds(run_label: str, db: Storage,
     return {
         "n_same_pairs": len(same),
         "n_diff_pairs": len(diff),
+        "n_excluded_rows": n_excluded,
         "same_identity_dist_mean": float(np.mean(same)),
         "diff_identity_dist_mean": float(np.mean(diff)),
         "suggested_t1": t1_percentile,

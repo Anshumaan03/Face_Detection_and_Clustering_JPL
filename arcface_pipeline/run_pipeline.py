@@ -98,6 +98,9 @@ def run_calibration(run_label: str = "default"):
         print(f"T2 = {result['suggested_t2']:.3f}"
               f"  (same-id mean={result['same_identity_dist_mean']:.3f},"
               f" diff-id mean={result['diff_identity_dist_mean']:.3f}){flag}")
+        if result["n_excluded_rows"] > 0:
+            print(f"(excluded {result['n_excluded_rows']} face(s) with placeholder identity "
+                  f"'uploaded' from calibration)")
         if result["no_safe_auto_merge_zone"]:
             print("WARNING: no distance cutoff in your data meets the target false-merge rate -- "
                   "consider a higher target rate or disabling auto-merge (T1 near 0.0).")

@@ -497,6 +497,10 @@ with tab_calibrate:
         st.write(f"Same-identity mean distance: {r['same_identity_dist_mean']:.3f}  |  "
                  f"Different-identity mean distance: {r['diff_identity_dist_mean']:.3f}  |  "
                  f"Sampled {r['n_same_pairs']} same-id and {r['n_diff_pairs']} diff-id pairs.")
+        if r["n_excluded_rows"] > 0:
+            st.caption(f"Excluded {r['n_excluded_rows']} face(s) with placeholder identity "
+                       f"('uploaded') from calibration -- those aren't real per-person ground "
+                       f"truth, so including them would corrupt the same-identity distribution.")
         st.write(f"At the precision-method T1, the achieved false-merge rate in your sample is "
                  f"**{r['achieved_false_merge_rate']:.2%}**.")
         if r["no_safe_auto_merge_zone"]:
