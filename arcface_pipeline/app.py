@@ -234,7 +234,7 @@ with tab_flow1:
 
         st.session_state["flow1_result_messages"] = []
         st.session_state["flow1_pending_items"] = {}
-        st.session_state["flow1_diagnostics"] = []
+        st.session_state["flow1_diagnostics"] = []  
 
         for uf in uploaded_files:
             raw_bytes = uf.getvalue()
