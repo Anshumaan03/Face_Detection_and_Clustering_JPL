@@ -16,7 +16,6 @@ from sklearn.metrics import (
 
 import config
 from storage import Storage
-from recommendations import build_centroids_from_clusters
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +63,6 @@ def cluster_model(model: str, db: Storage, run_label: str = "default") -> Dict:
 
     db.insert_cluster_labels(model, run_label, df["face_id"].tolist(), labels_pred.tolist())
     export_cluster_folders(df, model, run_label)
-
-    # Rebuild centroids (+ representative/"thumbnail" face per cluster) so the
-    # recommendation system (Flow 1 / Flow 2) has something fresh to compare against.
-    build_centroids_from_clusters(df, model, run_label, db)
 
     return {"df": df, "metrics": metrics}
 
